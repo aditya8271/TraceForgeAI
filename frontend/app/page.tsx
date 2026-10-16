@@ -102,12 +102,23 @@ type InvestigationResponse = {
   source: string;
   investigator: string;
   status: string;
-  report: string;
+  report: string | StructuredInvestigation;
   evidence_bundle?: { evidence?: unknown[]; [key: string]: unknown };
   reviewer?: { review_status?: string; flags_count?: number; [key: string]: unknown };
-  claim_review?: { review_status?: string; flags_count?: number; passed_checks?: number; checks_run?: number; [key: string]: unknown };
+  claim_review?: { review_status?: string; flags_count?: number; passed_checks?: number; checks_run?: number; claims?: { claim_id: string; claim: string; claim_type: string; status: string; meaning: string }[]; [key: string]: unknown };
   claim_links?: { linked_claims?: unknown[]; [key: string]: unknown };
   disclaimer?: string;
+};
+type StructuredInvestigation = {
+  summary?: string;
+  claims?: { claim_type: string; claim: string; evidence_refs?: string[]; uncertainty?: string }[];
+  observed_evidence?: { claim: string; evidence_refs?: string[] }[];
+  interpretations?: { claim: string; evidence_refs?: string[]; uncertainty?: string }[];
+  alternative_explanations?: string[];
+  missing_information?: string[];
+  uncertainty?: string;
+  recommended_next_steps?: string[];
+  limitations?: string[];
 };
 function formatCompact(value: unknown) {
   const number = Number(value);
@@ -1581,7 +1592,7 @@ export default function Home() {
                           className="text-button"
                           onClick={() =>
                             void navigator.clipboard.writeText(
-                              investigationReport.report
+                              typeof investigationReport.report === "string" ? investigationReport.report : JSON.stringify(investigationReport.report, null, 2)
                             )
                           }
                         >
@@ -1596,7 +1607,16 @@ export default function Home() {
                           lineHeight: 1.75,
                         }}
                       >
-                        {investigationReport.report}
+                        {typeof investigationReport.report === "string" ? investigationReport.report : <div style={{ display: "grid", gap: 14 }}>
+                          <section><strong>Summary</strong><p>{investigationReport.report.summary || "No summary returned."}</p></section>
+                          <section><strong>Typed claims · uncertainty {investigationReport.report.uncertainty || "not stated"}</strong>{(investigationReport.report.claims || []).map((item, index) => <p key={index}><span className="tag tag-gray">{item.claim_type.replaceAll("_", " ")}</span> {item.claim} <span className="metric-detail">Refs: {item.evidence_refs?.join(", ") || "none"} · {item.uncertainty || "uncertainty not stated"}</span></p>)}</section>
+                          {[ ["Alternative explanations", investigationReport.report.alternative_explanations], ["Missing information", investigationReport.report.missing_information], ["Recommended next steps", investigationReport.report.recommended_next_steps], ["Limitations", investigationReport.report.limitations] ].map(([title, values]) => <section key={String(title)}><strong>{String(title)}</strong><ul>{(values as string[] | undefined)?.map((item, index) => <li key={index}>{item}</li>)}</ul></section>)}
+                        </div>}
+                      </div>
+                      <div className="panel-card" style={{ marginTop: 14 }}>
+                        <div className="card-heading"><div><h3>Deterministic claim review</h3><p>Source consistency checks only · not semantic truth verification</p></div><span className="tag tag-amber">{investigationReport.claim_review?.review_status || "Not returned"}</span></div>
+                        {(investigationReport.claim_review?.claims || []).map((item) => <div className="detail-row" key={item.claim_id} style={{ alignItems: "flex-start" }}><span style={{ minWidth: 78 }}>{item.claim_id} · {item.status}</span><strong style={{ textAlign: "left", maxWidth: "78%" }}>{item.claim}<br /><span className="metric-detail">{item.meaning}</span></strong></div>)}
+                        {!(investigationReport.claim_review?.claims || []).length && <p className="metric-detail">No claim-level review results were returned.</p>}
                       </div>
                       <div className="human-note" style={{ marginTop: 12 }}>
                         {investigationReport.disclaimer ||

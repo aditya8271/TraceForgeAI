@@ -288,9 +288,24 @@ def build_investigation_snapshot(alert: dict) -> dict:
             headers={"Retry-After": "60"},
         )
     report = investigate_alert(alert)
-    reviewer_result = review_investigation(report, evidence_bundle)
+    reviewer_result = review_investigation(
+        json.dumps(report, ensure_ascii=False) if isinstance(report, dict) else report,
+        evidence_bundle,
+    )
     claim_links = link_claims_to_evidence(report, evidence_bundle)
-    claim_review = review_claim_links(claim_links, evidence_bundle)
+    if isinstance(report, dict) and isinstance(report.get("claims"), list):
+        report = {
+            **report,
+            "claims": [
+                {**claim, "claim_id": claim_links["linked_claims"][index]["claim_id"]}
+                for index, claim in enumerate(report["claims"])
+            ],
+        }
+    claim_review = review_claim_links(
+        claim_links,
+        evidence_bundle,
+        report if isinstance(report, dict) else None,
+    )
 
     return {
         "transaction_id": alert.get("transaction_id"),

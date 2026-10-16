@@ -241,6 +241,55 @@ def test_end_to_end_investigation_case_decision_and_audit(client, monkeypatch):
     assert any(event["action"] == "Analyst decision recorded" for event in audit_history.json()["events"])
 
 
+def test_structured_claim_review_and_decision_persist_end_to_end(client, monkeypatch):
+    report = {
+        "summary": "Historical alert requires review.",
+        "claims": [
+            {"claim_type": "observed_fact", "claim": "Recorded amount is 1200", "evidence_refs": ["E004"], "uncertainty": "medium"},
+            {"claim_type": "observed_fact", "claim": "Recorded amount is 9999", "evidence_refs": ["E004"], "uncertainty": "medium"},
+            {"claim_type": "recommendation", "claim": "Obtain more transaction history", "evidence_refs": [], "uncertainty": "medium"},
+        ],
+        "alternative_explanations": ["A legitimate one-off payment is possible."],
+        "missing_information": ["Customer purpose is unavailable."],
+        "uncertainty": "high",
+        "recommended_next_steps": ["Review source transaction details."],
+        "limitations": ["Historical replay record only."],
+    }
+    monkeypatch.setattr(api, "investigate_alert", lambda alert: report)
+
+    investigation = client.post("/api/investigate", json={"transaction_id": "TXN_TEST_100"})
+    assert investigation.status_code == 200
+    result = investigation.json()
+    assert result["report"]["claims"]
+    assert result["report"]["claims"][0]["claim_id"] == "CLM-001"
+    assert result["claim_links"]["linked_claims"][0]["claim_id"] == "CLM-001"
+    reference = result["claim_links"]["linked_claims"][0]["evidence_refs"][0]
+    assert reference["source_field"] == "amount"
+    assert reference["source_record_id"] == "TXN_TEST_100"
+    statuses = {claim["status"] for claim in result["claim_review"]["claims"]}
+    assert "SUPPORTED_BY_SOURCE" in statuses
+    assert "CONTRADICTED_BY_SOURCE" in statuses
+    assert "NOT_CHECKED" in statuses
+
+    case_key = "transaction:TXN_TEST_100"
+    assert client.post("/api/cases", json={
+        "case_key": case_key, "case_type": "transaction", "transaction_id": "TXN_TEST_100",
+        "status": "New", "notes": "Structured workflow persistence fixture",
+    }).status_code == 200
+    decision = client.post("/api/case-review", json={
+        "case_key": case_key, "decision": "Escalate",
+        "reason": "Source contradiction requires analyst review", "actor": "Test analyst",
+    })
+    assert decision.status_code == 200
+    history = client.get(f"/api/case-reviews/{case_key}").json()["reviews"]
+    assert history[0]["decision"] == "Escalate"
+    snapshot = history[0]["evidence_snapshot"]
+    assert snapshot["report"]["claims"][1]["claim"] == "Recorded amount is 9999"
+    assert any(claim["status"] == "CONTRADICTED_BY_SOURCE" for claim in snapshot["claim_review"]["claims"])
+    audit = client.get(f"/api/case-audit/{case_key}").json()["events"]
+    assert any(event["action"] == "Analyst decision recorded" for event in audit)
+
+
 def test_investigation_unknown_transaction_returns_404(client):
     response = client.post("/api/investigate", json={"transaction_id": "TXN_UNKNOWN"})
     assert response.status_code == 404

@@ -1,136 +1,86 @@
+"""Normalize model claims and attach trusted source metadata.
 
-"""Link investigation claims to source evidence IDs.
-
-This module creates traceable, source-grounded claims from the
-historical alert evidence. It does not determine whether fraud occurred.
+This module links references; it never decides that a claim is true.
 """
 
-import re
+from __future__ import annotations
+
+from typing import Any
 
 
-def _evidence_map(evidence_bundle: dict) -> dict:
-    return {
-        item["field"]: item
-        for item in evidence_bundle.get("evidence", [])
-    }
+CLAIM_TYPES = {
+    "observed_fact",
+    "derived_calculation",
+    "ai_interpretation",
+    "recommendation",
+}
 
 
-def _number(value):
-    try:
-        return float(str(value).replace(",", "").strip())
-    except (TypeError, ValueError):
-        return None
+def link_claims_to_evidence(report: dict | str, evidence_bundle: dict) -> dict:
+    source_items = evidence_bundle.get("evidence", [])
+    by_id = {item.get("evidence_id"): item for item in source_items}
+    claims: list[dict[str, Any]] = []
+    structured_claims = report.get("claims", []) if isinstance(report, dict) else []
+    if isinstance(report, dict) and not structured_claims:
+        for section in ("observed_evidence", "interpretations"):
+            for raw in report.get(section, []):
+                if isinstance(raw, dict):
+                    structured_claims.append({
+                        **raw,
+                        "claim_type": "observed_fact" if section == "observed_evidence" else "ai_interpretation",
+                    })
 
+    # Compatibility for existing API callers that still return plain report text.
+    if not isinstance(report, dict):
+        structured_claims = [{
+            "claim_type": "ai_interpretation",
+            "claim": str(report or ""),
+            "evidence_refs": [],
+            "uncertainty": None,
+        }]
 
-def _number_in_text(value, report: str) -> bool:
-    expected = _number(value)
-    if expected is None:
-        return False
-
-    matches = re.findall(
-        r"(?<![A-Za-z0-9_])[-+]?\d[\d,]*(?:\.\d+)?",
-        report or "",
-    )
-    return any(
-        _number(match) == expected
-        for match in matches
-    )
-
-
-def link_claims_to_evidence(report: str, evidence_bundle: dict) -> dict:
-    """Return claims linked to evidence fields and their source record."""
-
-    evidence = _evidence_map(evidence_bundle)
-    report_text = report or ""
-    report_lower = report_text.lower()
-    claims = []
-
-    def add_claim(claim_id, text, fields, supported):
-        references = []
-        for field in fields:
-            item = evidence.get(field)
-            if item and item.get("available"):
-                references.append({
-                    "evidence_id": item["evidence_id"],
-                    "field": field,
-                    "source": item["source"],
-                    "source_record_key": item["source_record_key"],
+    for index, raw in enumerate(structured_claims, start=1):
+        if not isinstance(raw, dict):
+            raw = {"claim": str(raw), "claim_type": "ai_interpretation", "evidence_refs": []}
+        claim_type = raw.get("claim_type") or "unknown"
+        references = raw.get("evidence_refs", [])
+        if not isinstance(references, list):
+            references = []
+        linked_refs = []
+        for reference in references:
+            evidence_id = reference.get("evidence_id") if isinstance(reference, dict) else reference
+            item = by_id.get(evidence_id)
+            if item:
+                linked_refs.append({
+                    "evidence_id": evidence_id,
+                    "field": item.get("field"),
+                    "source_record_key": item.get("source_record_key"),
+                    "source_field": item.get("field"),
+                    "source": item.get("source"),
+                    "source_record_id": item.get("source_record_key"),
+                    "value": item.get("value"),
+                    "unit": item.get("unit", "unspecified"),
+                })
+            else:
+                linked_refs.append({
+                    "evidence_id": evidence_id,
+                    "field": None,
+                    "source_record_key": None,
+                    "source_field": None,
+                    "source": None,
+                    "source_record_id": None,
+                    "value": None,
+                    "unit": "unspecified",
                 })
 
         claims.append({
-            "claim_id": claim_id,
-            "claim": text,
-            "evidence_refs": references,
-            "link_status": (
-                "MATCHED_TO_REPORT"
-                if supported and references
-                else "SOURCE_EVIDENCE_ONLY"
-                if references
-                else "NO_EVIDENCE_AVAILABLE"
-            ),
+            "claim_id": f"CLM-{index:03d}",
+            "claim_type": claim_type,
+            "claim": str(raw.get("claim", "")).strip(),
+            "uncertainty": raw.get("uncertainty"),
+            "evidence_refs": linked_refs,
+            "link_status": "REFERENCE_ATTACHED" if linked_refs else "MISSING_REFERENCE",
         })
-
-    amount = evidence.get("amount", {}).get("value")
-    if amount is not None:
-        amount_found = _number_in_text(amount, report_text)
-        add_claim(
-            "C001",
-            f"Recorded transaction amount: {amount} (currency unspecified).",
-            ["amount", "absolute_amount"],
-            amount_found,
-        )
-
-    baseline = evidence.get("baseline_transactions", {}).get("value")
-    history = evidence.get("history_sufficient", {}).get("value")
-    if baseline is not None:
-        baseline_is_zero = _number(baseline) == 0
-        baseline_claim = (
-            "No prior baseline transactions are recorded."
-            if baseline_is_zero
-            else f"Recorded prior baseline transaction count: {baseline}."
-        )
-        baseline_found = (
-            ("zero" in report_lower or "0" in report_text)
-            if baseline_is_zero
-            else str(baseline).lower() in report_lower
-        )
-        add_claim(
-            "C002",
-            baseline_claim,
-            ["baseline_transactions", "history_sufficient"],
-            baseline_found,
-        )
-
-    reason = evidence.get("reasons", {}).get("value")
-    if reason:
-        reason_found = str(reason).lower() in report_lower
-        add_claim(
-            "C003",
-            f"Recorded alert reason: {reason}.",
-            ["reasons"],
-            reason_found,
-        )
-
-    if history is not None:
-        history_is_insufficient = str(history).strip().lower() == "false"
-        if history_is_insufficient:
-            acknowledges = any(
-                phrase in report_lower
-                for phrase in (
-                    "insufficient baseline",
-                    "baseline is completely missing",
-                    "zero prior baseline",
-                    "no prior baseline",
-                    "no established transaction history",
-                    "history_sufficient: false",
-                )
-            )
-            add_claim(
-                "C004",
-                "Historical baseline is marked insufficient.",
-                ["history_sufficient", "baseline_transactions"],
-                acknowledges,
-            )
 
     return {
         "source": evidence_bundle.get("source", "historical_replay"),
@@ -138,9 +88,7 @@ def link_claims_to_evidence(report: str, evidence_bundle: dict) -> dict:
         "claim_count": len(claims),
         "linked_claims": claims,
         "limitations": [
-            "These are selected source-grounded claims, not an exhaustive extraction of every report sentence.",
-            "A linked evidence reference does not prove the claim is a sign of fraud.",
-            "Text matching can miss equivalent wording or match misleading wording.",
-            "Human review remains necessary.",
+            "Server-assigned links identify cited records; they do not establish claim truth.",
+            "Deterministic checks are conservative and do not replace analyst judgment.",
         ],
     }

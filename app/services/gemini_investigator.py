@@ -6,6 +6,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
+from app.evidence import EVIDENCE_FIELDS, FIELD_UNITS
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -127,6 +128,7 @@ def _build_prompt(evidence):
         "account_id",
         "transaction_timestamp",
         "amount",
+        "absolute_amount",
         "txn_type",
         "channel",
         "mcc_code",
@@ -137,6 +139,7 @@ def _build_prompt(evidence):
         "history_sufficient",
         "reasons",
         "evidence_summary",
+        "alert_status",
     )
 
     clean = {}
@@ -147,6 +150,15 @@ def _build_prompt(evidence):
 
             if value is not None:
                 clean[field] = value
+
+    clean["evidence_reference_map"] = {
+        f"E{index:03d}": {
+            "source_field": field,
+            "value": evidence.get(field),
+            "unit": FIELD_UNITS.get(field, "unspecified"),
+        }
+        for index, field in enumerate(EVIDENCE_FIELDS, start=1)
+    }
 
     evidence_json = json.dumps(
         clean,
@@ -171,6 +183,12 @@ Clearly distinguish:
 3. Alternative benign explanations
 4. Recommended next checks for a human analyst
 5. Limitations and missing evidence
+
+Return only valid JSON with this schema:
+{{"summary":"...","claims":[{{"claim_type":"observed_fact|derived_calculation|ai_interpretation|recommendation","claim":"...","evidence_refs":["E004"],"uncertainty":"low|medium|high"}}],
+"alternative_explanations":["..."],"missing_information":["..."],
+"uncertainty":"low|medium|high","recommended_next_steps":["..."],"limitations":["..."]}}
+Give every claim an evidence reference when it states a fact. Recommendations may have no evidence reference. Use only IDs present in evidence_reference_map, never infer a field or record. Use observed_fact only for a narrow statement directly represented by a source field; derived_calculation only for a reproducible calculation and name its formula in the claim; distinguish interpretation from fact. State units and uncertainty. Do not expand one-record alert evidence into account-wide or ownership claims.
 
 A high amount or unusual ratio alone does not prove fraud.
 If the historical baseline is insufficient or tiny, say so.
@@ -218,7 +236,22 @@ def investigate_alert(evidence):
                     "Gemini returned an empty investigation."
                 )
 
-            return result.strip()
+            try:
+                report = json.loads(result.strip())
+            except (json.JSONDecodeError, TypeError):
+                raise GeminiInvestigationError("Gemini returned a report that did not match the required JSON format.") from None
+            required = ("summary", "claims", "alternative_explanations", "missing_information", "uncertainty", "recommended_next_steps", "limitations")
+            if not isinstance(report, dict) or any(key not in report for key in required):
+                raise GeminiInvestigationError("Gemini returned an incomplete structured investigation.")
+            for key in ("claims", "alternative_explanations", "missing_information", "recommended_next_steps", "limitations"):
+                if not isinstance(report[key], list):
+                    raise GeminiInvestigationError("Gemini returned an invalid structured investigation.")
+            for claim in report["claims"]:
+                if not isinstance(claim, dict) or not str(claim.get("claim", "")).strip():
+                    raise GeminiInvestigationError("Gemini returned a malformed claim.")
+            if report["uncertainty"] not in {"low", "medium", "high"}:
+                report["uncertainty"] = None
+            return report
 
         except GeminiInvestigationError:
             raise
