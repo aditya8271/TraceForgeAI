@@ -28,6 +28,15 @@ EVIDENCE_FIELDS = (
     "alert_status",
 )
 
+FIELD_UNITS = {
+    "amount": "source_units_unverified",
+    "absolute_amount": "source_units_unverified",
+    "baseline_transactions": "transactions",
+    "past_median_amount": "source_units_unverified",
+    "amount_multiple": "ratio",
+    "transaction_timestamp": "source_timestamp_unverified",
+}
+
 
 def _clean_value(value: Any) -> Any:
     if value is None:
@@ -60,6 +69,7 @@ def build_evidence_bundle(alert: dict) -> dict:
             "available": value is not None,
             "source": "data/replay/replay_alerts.csv",
             "source_record_key": transaction_id,
+            "unit": FIELD_UNITS.get(field, "unspecified"),
         })
 
     by_field = {item["field"]: item for item in items}
@@ -70,6 +80,21 @@ def build_evidence_bundle(alert: dict) -> dict:
     multiple = by_field["amount_multiple"]["value"]
 
     warnings = []
+    conflicts = []
+
+    recorded_amount = by_field["amount"]["value"]
+    absolute_amount = by_field["absolute_amount"]["value"]
+    try:
+        if recorded_amount is not None and absolute_amount is not None and abs(float(recorded_amount)) != float(absolute_amount):
+            conflicts.append({
+                "fields": ["amount", "absolute_amount"],
+                "details": "Recorded amount magnitude differs from the absolute_amount field.",
+            })
+    except (TypeError, ValueError):
+        conflicts.append({
+            "fields": ["amount", "absolute_amount"],
+            "details": "Amount fields could not be compared as numeric values.",
+        })
 
     if str(history_sufficient).lower() != "true":
         warnings.append(
@@ -99,6 +124,7 @@ def build_evidence_bundle(alert: dict) -> dict:
         "record_key": transaction_id,
         "evidence": items,
         "warnings": warnings,
+        "conflicts": conflicts,
         "limitations": [
             "Evidence reflects the selected historical alert record.",
             "Evidence availability does not establish that fraud occurred.",
