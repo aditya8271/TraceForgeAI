@@ -1,0 +1,66 @@
+﻿# Environment secrets
+.env
+.env.*
+!.env.example
+secrets/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local databases and generated replay data
+*.db
+*.sqlite
+*.sqlite3
+data/replay/
+data/reports/
+
+# Dataset files
+data/raw/
+data/processed/
+
+# Model artifacts
+models/*.joblib
+models/*.pkl
+
+# Next.js
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+
+# Environment and build output
+dist/
+build/
+*.log
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Generated local datasets and feature exports
+data/features/
+data/generated/
+
+# Local dependency inventory
+installed-packages.txt
+
+# Local test script
+test_gemini.py
+
+# Local profiling and public-data cache/status
+data/profile_report.json
+data/intelligence/
+
+# Local code backups
+*.backup.py
+*.backup.tsx

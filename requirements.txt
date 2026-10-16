@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+pydantic
+pandas
+numpy
+scikit-learn
+joblib
+duckdb
+networkx
+streamlit
+google-genai
+python-dotenv
+pytest
+httpx

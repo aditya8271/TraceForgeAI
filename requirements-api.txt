@@ -1,0 +1,7 @@
+# Minimal backend runtime dependencies. Keep synchronized with app imports.
+fastapi==0.143.0
+uvicorn[standard]==0.54.0
+networkx==3.7
+google-genai==2.29.0
+python-dotenv==1.2.4
+psycopg[binary]==3.3.6

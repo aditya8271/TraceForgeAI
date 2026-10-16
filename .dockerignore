@@ -1,0 +1,26 @@
+# Start from an empty context and explicitly include only API runtime code/data.
+**
+!Dockerfile
+!requirements-api.txt
+!app/
+!app/__init__.py
+!app/api.py
+!app/persistence.py
+!app/evidence.py
+!app/claim_linker.py
+!app/claim_reviewer.py
+!app/reviewer.py
+!app/fraud_ring.py
+!app/graph_engine.py
+!app/services/
+!app/services/__init__.py
+!app/services/gemini_investigator.py
+!data/
+!data/replay/
+!data/replay/replay_alerts.csv
+!data/replay/replay_summary.json
+!data/generated/
+!data/generated/accounts.csv
+!data/generated/transactions.csv
+!data/generated/entity_observations.csv
+!data/generated/ground_truth.csv
