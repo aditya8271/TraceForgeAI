@@ -22,7 +22,7 @@ TraceForge AI is a BFSI-focused financial crime investigation platform designed 
 
 ## Local Development
 
-See `docs/CLOUD_DEPLOYMENT.md` for environment configuration, persistence requirements, migration guidance, and deployment prerequisites.
+See `docs/CLOUD_DEPLOYMENT.md` for the actual API-only Cloud Run / static Next.js architecture, pinned runtime requirements, optional runtime assets, PostgreSQL setup, migration steps, health/readiness probes, and deployment preflight.
 
 Create your local `.env` from `.env.example` and configure the required variables. Never commit API keys, credentials, local databases, or raw transaction datasets.
 
@@ -31,3 +31,5 @@ Create your local `.env` from `.env.example` and configure the required variable
 TraceForge AI supports investigation and triage; its alerts are not proof of fraud. Synthetic evaluation results must not be interpreted as real-world performance. Analyst decisions require appropriate human review.
 
 Cloud deployment requires persistent PostgreSQL storage and an approved API access-security boundary.
+
+The API image uses the fully pinned package versions in `requirements-api.lock` and intentionally excludes local databases, private datasets, feature exports, and trained models. Run the read-only deployment check with `py -3.14 scripts/preflight.py`; it does not deploy or print credentials.

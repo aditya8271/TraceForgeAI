@@ -64,3 +64,10 @@ data/intelligence/
 # Local code backups
 *.backup.py
 *.backup.tsx
+
+# Local deployment cache and dependency-lock backup
+.firebase/
+frontend/package-lock.before-audit.json
+
+# Local replay data and investigation database
+/data/replay/

@@ -16,6 +16,8 @@ from psycopg.types.json import Jsonb
 
 
 ROOT = Path(__file__).resolve().parents[1]
+_configured_data_dir = Path(os.getenv("TRACEFORGE_DATA_DIR", str(ROOT / "data"))).expanduser()
+DATA_DIR = (_configured_data_dir if _configured_data_dir.is_absolute() else ROOT / _configured_data_dir).resolve()
 TABLES = {
     "investigations": ("case_key", (
         "case_key", "case_type", "account_id", "transaction_id", "status", "notes", "updated_at",
@@ -81,7 +83,15 @@ def copy_sqlite_data(connection, source_db: Path, public_data_dir: Path) -> dict
     counts = {}
     try:
         with connection.transaction():
+            source_tables = {
+                row[0] for row in source.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
             for table, (primary_key, columns) in TABLES.items():
+                if table not in source_tables:
+                    counts[table] = 0
+                    continue
                 source_rows = source.execute(
                     f"SELECT {', '.join(columns)} FROM {table} ORDER BY {primary_key}"
                 ).fetchall()
@@ -150,31 +160,39 @@ def main() -> int:
     parser.add_argument(
         "--source-db",
         type=Path,
-        default=ROOT / "data" / "replay" / "investigations.db",
+        default=DATA_DIR / "replay" / "investigations.db",
         help="Existing SQLite source database; opened read-only.",
     )
     parser.add_argument(
         "--public-data-dir",
         type=Path,
-        default=ROOT / "data" / "intelligence",
+        default=DATA_DIR / "intelligence",
         help="Directory containing existing public-data JSON cache/status files.",
+    )
+    parser.add_argument(
+        "--schema-only",
+        action="store_true",
+        help="Apply versioned PostgreSQL migrations without reading any local database or data files.",
     )
     args = parser.parse_args()
     database_url = os.getenv("DATABASE_URL", "").strip()
     if not database_url.startswith(("postgresql://", "postgres://")):
         print("Migration stopped: DATABASE_URL must point to PostgreSQL.", file=sys.stderr)
         return 2
-    if not args.source_db.is_file():
+    if not args.schema_only and not args.source_db.is_file():
         print("Migration stopped: source SQLite database was not found.", file=sys.stderr)
         return 2
 
     try:
         with psycopg.connect(database_url, connect_timeout=10) as connection:
             apply_schema(connection)
-            counts = copy_sqlite_data(connection, args.source_db, args.public_data_dir)
+            counts = {} if args.schema_only else copy_sqlite_data(connection, args.source_db, args.public_data_dir)
         for table, count in counts.items():
             print(f"Verified {count} source rows in {table} (existing target rows were retained).")
-        print("PostgreSQL schema and local data migration completed.")
+        if args.schema_only:
+            print("PostgreSQL schema migrations completed; no local database or data files were read.")
+        else:
+            print("PostgreSQL schema and local data migration completed.")
         return 0
     except MigrationConflict as exc:
         print(f"Migration stopped: {exc}", file=sys.stderr)

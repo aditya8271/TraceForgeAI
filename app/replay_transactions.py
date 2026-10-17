@@ -223,7 +223,7 @@ def main():
         "accounts_seen": len(history),
         "alerts_generated": alert_count,
         "transaction_types": dict(type_counts),
-        "alert_file": str(output_file),
+        "alert_file": output_file.name,
         "alert_thresholds": {
             "window_size": WINDOW_SIZE,
             "minimum_history": MIN_HISTORY,

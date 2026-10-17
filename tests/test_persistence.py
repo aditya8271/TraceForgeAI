@@ -36,3 +36,34 @@ def test_cloud_run_refuses_ephemeral_sqlite_when_database_url_missing(tmp_path, 
         with connect(tmp_path / "must-not-exist.db"):
             pass
     assert not (tmp_path / "must-not-exist.db").exists()
+
+
+def test_invalid_database_timeout_is_rejected_without_secret_output(monkeypatch):
+    from app.persistence import get_db_connect_timeout
+
+    monkeypatch.setenv("DB_CONNECT_TIMEOUT_SECONDS", "31")
+    with pytest.raises(DatabaseConfigurationError, match="between 1 and 30"):
+        get_db_connect_timeout()
+
+
+def test_schema_only_migration_never_opens_local_sqlite(monkeypatch, tmp_path, capsys):
+    import sys
+    from scripts import migrate_sqlite_to_postgres as migration
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:secret@db.invalid/test")
+    missing_source = tmp_path / "must-not-be-read.db"
+    monkeypatch.setattr(sys, "argv", ["migrate_sqlite_to_postgres", "--schema-only", "--source-db", str(missing_source)])
+    monkeypatch.setattr(migration.psycopg, "connect", lambda *args, **kwargs: FakeConnection())
+    monkeypatch.setattr(migration, "apply_schema", lambda _connection: None)
+    assert migration.main() == 0
+    assert not missing_source.exists()
+    output = capsys.readouterr().out
+    assert "schema migrations completed" in output
+    assert "secret" not in output

@@ -2,12 +2,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 import csv
 import json
+import logging
 import math
 import os
 import asyncio
 import tempfile
 from contextlib import contextmanager
 from html.parser import HTMLParser
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 from typing import Optional
@@ -38,10 +40,15 @@ from app.services.gemini_investigator import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-REPLAY_DIR = ROOT / "data" / "replay"
+_configured_data_dir = Path(os.getenv("TRACEFORGE_DATA_DIR", str(ROOT / "data"))).expanduser()
+DATA_DIR = (_configured_data_dir if _configured_data_dir.is_absolute() else ROOT / _configured_data_dir).resolve()
+REPLAY_DIR = DATA_DIR / "replay"
+GENERATED_DIR = DATA_DIR / "generated"
+INTELLIGENCE_DIR = DATA_DIR / "intelligence"
 ALERTS_FILE = REPLAY_DIR / "replay_alerts.csv"
 SUMMARY_FILE = REPLAY_DIR / "replay_summary.json"
 DB_FILE = REPLAY_DIR / "investigations.db"
+logger = logging.getLogger("traceforge.api")
 
 CASE_STATUSES = {"New", "Under Review", "Escalated", "Closed"}
 REVIEW_DECISIONS = {"Approve", "Reject", "Escalate"}
@@ -136,6 +143,43 @@ app.add_middleware(
 )
 
 
+def validate_runtime_configuration():
+    """Validate non-secret settings without requiring optional Gemini credentials."""
+    from app.persistence import get_database_url, get_db_connect_timeout
+
+    get_database_url()
+    get_db_connect_timeout()
+    try:
+        timeout = int(os.getenv("TRACEFORGE_GEMINI_TIMEOUT_SECONDS", "30"))
+        request_limit = int(os.getenv("TRACEFORGE_GEMINI_MAX_REQUESTS_PER_MINUTE", "10"))
+    except ValueError:
+        raise RuntimeError("Gemini timeout and request limit settings must be integers.") from None
+    if not 1 <= timeout <= 120:
+        raise RuntimeError("TRACEFORGE_GEMINI_TIMEOUT_SECONDS must be between 1 and 120.")
+    if request_limit < 1:
+        raise RuntimeError("TRACEFORGE_GEMINI_MAX_REQUESTS_PER_MINUTE must be positive.")
+    try:
+        port = int(os.getenv("PORT", "8080"))
+    except ValueError:
+        raise RuntimeError("PORT must be an integer between 1 and 65535.") from None
+    if not 1 <= port <= 65535:
+        raise RuntimeError("PORT must be an integer between 1 and 65535.")
+    if os.getenv("K_SERVICE"):
+        origins = [origin.strip() for origin in os.getenv("TRACEFORGE_CORS_ORIGINS", "").split(",") if origin.strip()]
+        if not origins or any(
+            origin == "*"
+            or urlparse(origin).scheme != "https"
+            or not urlparse(origin).netloc
+            or urlparse(origin).path not in {"", "/"}
+            or urlparse(origin).query
+            or urlparse(origin).fragment
+            for origin in origins
+        ):
+            raise RuntimeError("Cloud Run requires TRACEFORGE_CORS_ORIGINS to contain exact HTTPS frontend origins; wildcards and localhost are not allowed.")
+        if not os.getenv("DATABASE_URL", "").strip():
+            logger.error("Cloud Run is starting without DATABASE_URL; persistent case and audit operations will return 503.")
+
+
 class PublicDataImportRequest(BaseModel):
     source_name: str = Field(min_length=2, max_length=150)
     source_url: str = Field(min_length=8, max_length=1000)
@@ -226,15 +270,23 @@ def ensure_case_table():
 
 @contextmanager
 def db_connection():
-    with open_database_connection(DB_FILE) as connection:
-        yield connection
+    try:
+        with open_database_connection(DB_FILE) as connection:
+            yield connection
+    except DatabaseConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Persistent database operation failed (%s).", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Persistent database is unavailable. Verify database connectivity and apply the documented schema migrations.") from None
 
 
 def load_alerts():
     if not ALERTS_FILE.exists():
         raise HTTPException(
             status_code=503,
-            detail="Historical replay alerts file is not available.",
+            detail="Historical replay alerts are unavailable. Configure TRACEFORGE_DATA_DIR with the replay assets to enable alert, investigation, and money-trail routes.",
         )
     try:
         with ALERTS_FILE.open("r", newline="", encoding="utf-8-sig") as file:
@@ -329,6 +381,21 @@ def build_investigation_snapshot(alert: dict) -> dict:
 @app.get("/api/health")
 def health():
     try:
+        from app.persistence import get_database_url
+        configured = get_database_url()
+    except DatabaseConfigurationError:
+        return JSONResponse(
+            {"status": "unavailable", "service": "traceforge-api"},
+            status_code=503,
+        )
+    storage = "postgresql" if configured else "postgresql_required" if os.getenv("K_SERVICE") else "local_sqlite"
+    return {"status": "ok", "service": "traceforge-api", "storage_configured": storage}
+
+
+@app.get("/api/ready")
+def ready():
+    """Readiness probe for persistent case/audit storage; no migration is run."""
+    try:
         with db_connection() as con:
             con.execute("SELECT 1 FROM investigations LIMIT 0").fetchall()
             if using_postgres():
@@ -338,13 +405,13 @@ def health():
                 storage = "local_sqlite"
     except Exception:
         return JSONResponse(
-            {"status": "unavailable", "service": "traceforge-api", "storage": "unavailable"},
+            {"status": "not_ready", "service": "traceforge-api", "detail": "Persistent storage is unavailable or its explicit schema migration has not been applied."},
             status_code=503,
         )
-    return {"status": "ok", "service": "traceforge-api", "storage": storage}
+    return {"status": "ready", "service": "traceforge-api", "storage": storage}
 
 
-PUBLIC_DATA_DIR = ROOT / "data" / "intelligence"
+PUBLIC_DATA_DIR = INTELLIGENCE_DIR
 PUBLIC_DATA_FILE = PUBLIC_DATA_DIR / "public_payment_stats.json"
 PUBLIC_DATA_STATUS_FILE = PUBLIC_DATA_DIR / "public_payment_stats_status.json"
 NPCI_UPI_SOURCE = "https://www.npci.org.in/product/upi/product-statistics"
@@ -583,6 +650,9 @@ async def _initial_npci_refresh():
 
 @app.on_event("startup")
 async def start_public_data_refresh():
+    validate_runtime_configuration()
+    if os.getenv("TRACEFORGE_NPCI_AUTO_REFRESH", "false").strip().lower() not in {"1", "true", "yes", "on"}:
+        return
     app.state.public_data_refresh_task = asyncio.create_task(_initial_npci_refresh())
 
 
@@ -903,9 +973,8 @@ def get_synthetic_money_trails(
     min_amount: float = Query(default=1000, ge=0),
     ):
     """Evidence-backed multi-hop paths over the controlled synthetic dataset."""
-    generated_dir = ROOT / "data" / "generated"
     try:
-        engine = FraudGraphEngine(data_dir=generated_dir)
+        engine = FraudGraphEngine(data_dir=GENERATED_DIR)
         engine.load_data()
         trails = engine.find_money_trails(
             source_account=source_account, max_hops=max_hops, min_amount=min_amount
@@ -914,7 +983,7 @@ def get_synthetic_money_trails(
     except FileNotFoundError as exc:
         raise HTTPException(
             status_code=503,
-            detail=f"Synthetic dataset unavailable. Run generate_data.py first. {exc}",
+            detail="Optional synthetic transaction assets are unavailable. Configure TRACEFORGE_DATA_DIR with generated/ assets to enable this research route.",
         ) from None
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
@@ -938,11 +1007,11 @@ def get_synthetic_money_trails(
 def evaluate_fraud_ring_benchmark(max_hops: int = Query(default=4, ge=1, le=6)):
     """Run transparent account-level metrics against synthetic ground truth."""
     try:
-        result = evaluate_synthetic_rings(ROOT / "data" / "generated", max_hops=max_hops)
+        result = evaluate_synthetic_rings(GENERATED_DIR, max_hops=max_hops)
     except FileNotFoundError as exc:
         raise HTTPException(
             status_code=503,
-            detail=f"Synthetic dataset unavailable. Run generate_data.py first. {exc}",
+            detail="Optional synthetic transaction assets are unavailable. Configure TRACEFORGE_DATA_DIR with generated/ assets to enable this research route.",
         ) from None
     return result
 

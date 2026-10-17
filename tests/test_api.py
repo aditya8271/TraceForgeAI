@@ -48,6 +48,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(api, "ALERTS_FILE", alerts_file)
     monkeypatch.setattr(api, "SUMMARY_FILE", summary_file)
     monkeypatch.setattr(api, "DB_FILE", db_file)
+    monkeypatch.setattr(api, "GENERATED_DIR", tmp_path / "generated")
     intelligence_dir = tmp_path / "intelligence"
     monkeypatch.setattr(api, "PUBLIC_DATA_DIR", intelligence_dir)
     monkeypatch.setattr(api, "PUBLIC_DATA_FILE", intelligence_dir / "public_payment_stats.json")
@@ -67,6 +68,65 @@ def test_health_returns_ok(client):
     response = client.get("/api/health")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+
+
+def test_health_does_not_require_database(client, monkeypatch):
+    monkeypatch.setattr(api, "db_connection", lambda: (_ for _ in ()).throw(AssertionError("health must not connect to storage")))
+    assert client.get("/api/health").status_code == 200
+
+
+def test_ready_reports_missing_cloud_run_database(client, monkeypatch):
+    monkeypatch.setenv("K_SERVICE", "traceforge-test")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    response = client.get("/api/ready")
+    assert response.status_code == 503
+    assert response.json()["status"] == "not_ready"
+
+
+def test_database_connection_failure_returns_safe_503(client, monkeypatch):
+    import psycopg
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:secret@db.invalid/test")
+    monkeypatch.setattr(psycopg, "connect", lambda *args, **kwargs: (_ for _ in ()).throw(psycopg.OperationalError("connection failed for secret DSN")))
+    response = client.get("/api/cases")
+    assert response.status_code == 503
+    assert "secret" not in response.text
+    assert "Persistent database is unavailable" in response.text
+
+
+def test_cloud_runtime_rejects_unsafe_cors_and_invalid_database_timeout(monkeypatch):
+    monkeypatch.setenv("K_SERVICE", "traceforge-test")
+    monkeypatch.setenv("TRACEFORGE_CORS_ORIGINS", "*")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:secret@db.invalid/test")
+    monkeypatch.setenv("DB_CONNECT_TIMEOUT_SECONDS", "5")
+    with pytest.raises(RuntimeError, match="exact HTTPS"):
+        api.validate_runtime_configuration()
+    monkeypatch.setenv("TRACEFORGE_CORS_ORIGINS", "https://traceforge.example")
+    monkeypatch.setenv("DB_CONNECT_TIMEOUT_SECONDS", "0")
+    with pytest.raises(api.DatabaseConfigurationError, match="DB_CONNECT_TIMEOUT_SECONDS") as exc:
+        api.validate_runtime_configuration()
+    assert "secret" not in str(exc.value)
+
+
+def test_cloud_runtime_can_start_without_optional_gemini_or_database(monkeypatch, caplog):
+    monkeypatch.setenv("K_SERVICE", "traceforge-test")
+    monkeypatch.setenv("PORT", "8080")
+    monkeypatch.setenv("TRACEFORGE_CORS_ORIGINS", "https://traceforge.example")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    for name in ("GEMINI_API_KEY", "GEMINI_BACKUP_API_KEY", "GEMINI_BACKUP_API_KEY_2", "GEMINI_BACKUP_API_KEY_3"):
+        monkeypatch.delenv(name, raising=False)
+    api.validate_runtime_configuration()
+    assert "without DATABASE_URL" in caplog.text
+
+
+def test_missing_optional_replay_and_synthetic_assets_return_clear_503(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(api, "ALERTS_FILE", tmp_path / "missing-alerts.csv")
+    missing_alerts = client.get("/api/alerts")
+    assert missing_alerts.status_code == 503
+    assert "TRACEFORGE_DATA_DIR" in missing_alerts.json()["detail"]
+    synthetic = client.get("/api/fraud-ring/evaluate")
+    assert synthetic.status_code == 503
+    assert "Optional synthetic transaction assets" in synthetic.json()["detail"]
 
 
 def test_oversized_request_is_rejected_with_cors(client):

@@ -731,7 +731,7 @@ export default function Home() {
             Workspace <span>/</span> {active}
           </div>
           <div className="topbar-right">
-            <span className="environment">LOCAL WORKSPACE</span>
+                <span className="environment">INVESTIGATION CONSOLE</span>
             <span className="user-avatar">TF</span>
           </div>
         </header>
@@ -1325,7 +1325,7 @@ export default function Home() {
               </div>
               <div className="prototype-notice" style={{ marginBottom: 16 }}>
                 <span className="notice-icon">i</span>
-                <span><strong>Public aggregate data only.</strong> The app makes one automatic startup fetch. If NPCI returns HTTP 403, it records that source-specific block and does not automatically retry on later restarts. Use the button only when you want to make a new request. This is not a live bank transaction feed; the last successful data remains available as cached data.</span>
+                <span><strong>Public aggregate data only.</strong> Automatic startup fetching is disabled by default; it runs only when TRACEFORGE_NPCI_AUTO_REFRESH is explicitly enabled. If NPCI returns HTTP 403, the source-specific block is recorded and not automatically retried. This is not a live bank transaction feed; cached data may be ephemeral unless PostgreSQL is configured.</span>
               </div>
               {publicData?.refresh_status && <div className="boundary-row" role="status" aria-live="polite" style={{ marginBottom: 16 }}>
                 <span><strong>NPCI source status</strong><div className="metric-detail" style={{ marginTop: 4 }}>{publicData.refresh_status.message}</div>

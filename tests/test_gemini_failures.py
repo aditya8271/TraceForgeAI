@@ -10,6 +10,14 @@ def configured(monkeypatch):
     monkeypatch.delenv("GEMINI_BACKUP_API_KEY_3", raising=False)
 
 
+def test_missing_gemini_key_does_not_require_or_expose_a_credential(monkeypatch):
+    for name in ("GEMINI_API_KEY", "GEMINI_BACKUP_API_KEY", "GEMINI_BACKUP_API_KEY_2", "GEMINI_BACKUP_API_KEY_3"):
+        monkeypatch.delenv(name, raising=False)
+    with pytest.raises(gemini.GeminiInvestigationError, match="not configured") as error:
+        gemini.investigate_alert({"transaction_id": "SYNTH-NO-KEY"})
+    assert "SECRET" not in str(error.value)
+
+
 def test_gemini_timeout_returns_safe_transient_error(monkeypatch):
     configured(monkeypatch)
 

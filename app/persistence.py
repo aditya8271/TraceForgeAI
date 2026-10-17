@@ -74,6 +74,17 @@ def using_postgres() -> bool:
     return get_database_url() is not None
 
 
+def get_db_connect_timeout() -> int:
+    """Return the bounded connection timeout or reject invalid configuration."""
+    try:
+        timeout = int(os.getenv("DB_CONNECT_TIMEOUT_SECONDS", "5"))
+    except ValueError:
+        raise DatabaseConfigurationError("DB_CONNECT_TIMEOUT_SECONDS must be an integer between 1 and 30.") from None
+    if not 1 <= timeout <= 30:
+        raise DatabaseConfigurationError("DB_CONNECT_TIMEOUT_SECONDS must be an integer between 1 and 30.")
+    return timeout
+
+
 def ensure_sqlite_schema(db_file: Path) -> None:
     """Create missing local tables/indexes without altering existing rows."""
     db_file.parent.mkdir(parents=True, exist_ok=True)
@@ -148,7 +159,7 @@ def connect(db_file: Path) -> Iterator[object]:
 
         connection = psycopg.connect(
             database_url,
-            connect_timeout=max(1, min(int(os.getenv("DB_CONNECT_TIMEOUT_SECONDS", "5")), 30)),
+            connect_timeout=get_db_connect_timeout(),
             row_factory=dict_row,
         )
         adapter = PostgresConnection(connection)

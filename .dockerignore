@@ -1,7 +1,7 @@
-# Start from an empty context and explicitly include only API runtime code/data.
+# Deny the entire context by default; explicitly allow only API runtime code.
 **
 !Dockerfile
-!requirements-api.txt
+!requirements-api.lock
 !app/
 !app/__init__.py
 !app/api.py
@@ -15,12 +15,8 @@
 !app/services/
 !app/services/__init__.py
 !app/services/gemini_investigator.py
-!data/
-!data/replay/
-!data/replay/replay_alerts.csv
-!data/replay/replay_summary.json
-!data/generated/
-!data/generated/accounts.csv
-!data/generated/transactions.csv
-!data/generated/entity_observations.csv
-!data/generated/ground_truth.csv
+!migrations/
+!migrations/*.sql
+!scripts/
+!scripts/__init__.py
+!scripts/migrate_sqlite_to_postgres.py
