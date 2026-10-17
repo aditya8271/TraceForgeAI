@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
-const API = process.env.NEXT_PUBLIC_API_URL || (process.env.NODE_ENV === "development" ? "http://localhost:8000" : "");
+const API = "";
 const navigation = [
   { name: "Overview", icon: "◫" },
   { name: "Investigations", icon: "⌕" },
@@ -231,9 +231,7 @@ function SyntheticTrailGraph({ trails }: { trails: any[] }) {
   </div>;
 }
 async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}) {
-  if (!API) {
-    throw new Error("NEXT_PUBLIC_API_URL must be set to the deployed TraceForge API URL before building the production frontend.");
-  }
+  // Validation bypassed for Next.js internal proxy
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 45_000);
   try {
