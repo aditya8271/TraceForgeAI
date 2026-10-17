@@ -85,22 +85,22 @@ def _configured_clients():
     candidates = [
         (
             os.getenv("GEMINI_API_KEY"),
-            os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+            os.getenv("GEMINI_MODEL", "gemini-3.8-flash"),
             "primary",
         ),
         (
             os.getenv("GEMINI_BACKUP_API_KEY"),
-            os.getenv("GEMINI_BACKUP_MODEL", "gemini-2.5-flash"),
+            os.getenv("GEMINI_BACKUP_MODEL", "gemini-3.8-flash"),
             "backup 1",
         ),
         (
             os.getenv("GEMINI_BACKUP_API_KEY_2"),
-            os.getenv("GEMINI_BACKUP_MODEL_2", "gemini-2.5-flash"),
+            os.getenv("GEMINI_BACKUP_MODEL_2", "gemini-3.8-flash"),
             "backup 2",
         ),
         (
             os.getenv("GEMINI_BACKUP_API_KEY_3"),
-            os.getenv("GEMINI_BACKUP_MODEL_3", "gemini-2.5-flash"),
+            os.getenv("GEMINI_BACKUP_MODEL_3", "gemini-3.8-flash"),
             "backup 3",
         ),
     ]
