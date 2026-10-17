@@ -489,7 +489,7 @@ def _persist_public_state(payload=None, refresh_status=None):
             new_payload = payload if payload is not None else previous["payload"]
             new_status = refresh_status if refresh_status is not None else previous["refresh_status"]
             con.execute("""
-                INSERT INTO public_data_cache (id, payload, refresh_status)
+                INSERT INTO public_data_cache (id, payload, refresh_status, updated_at)
                 VALUES (1, ?, ?, CURRENT_TIMESTAMP::text)
                 ON CONFLICT (id) DO UPDATE SET
                     payload = excluded.payload,

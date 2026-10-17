@@ -48,6 +48,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(api, "ALERTS_FILE", alerts_file)
     monkeypatch.setattr(api, "SUMMARY_FILE", summary_file)
     monkeypatch.setattr(api, "DB_FILE", db_file)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     intelligence_dir = tmp_path / "intelligence"
     monkeypatch.setattr(api, "PUBLIC_DATA_DIR", intelligence_dir)
     monkeypatch.setattr(api, "PUBLIC_DATA_FILE", intelligence_dir / "public_payment_stats.json")
