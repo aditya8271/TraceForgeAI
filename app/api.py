@@ -7,6 +7,7 @@ import math
 import os
 import asyncio
 import tempfile
+from io import StringIO
 from contextlib import contextmanager
 from html.parser import HTMLParser
 from urllib.parse import urlparse
@@ -62,7 +63,8 @@ app = FastAPI(
 cors_origins = [
     origin.strip()
     for origin in os.getenv(
-        "TRACEFORGE_CORS_ORIGINS", "http://localhost:3000"
+        "TRACEFORGE_CORS_ORIGINS",
+        "http://localhost:3000,https://tracforge-ai.web.app",
     ).split(",")
     if origin.strip()
 ]
@@ -282,14 +284,106 @@ def db_connection():
         raise HTTPException(status_code=503, detail="Persistent database is unavailable. Verify database connectivity and apply the documented schema migrations.") from None
 
 
-def load_alerts():
-    if not ALERTS_FILE.exists():
+_REPLAY_ASSET_LIMITS = {
+    "replay_alerts.csv": 64 * 1024 * 1024,
+    "replay_summary.json": 1024 * 1024,
+}
+
+
+def _validate_replay_asset(filename: str, content: bytes) -> None:
+    """Validate structure before caching an approved private replay object."""
+    try:
+        decoded = content.decode("utf-8-sig")
+        if filename == "replay_alerts.csv":
+            reader = csv.DictReader(StringIO(decoded))
+            required = {"transaction_id", "account_id", "amount", "txn_type", "transaction_timestamp"}
+            if not reader.fieldnames or not required.issubset(reader.fieldnames):
+                raise ValueError("invalid CSV columns")
+            for row in reader:
+                if not row.get("transaction_id") or not row.get("account_id"):
+                    raise ValueError("invalid CSV row")
+                amount = float(row["amount"])
+                if not math.isfinite(amount):
+                    raise ValueError("invalid CSV amount")
+        else:
+            summary = json.loads(decoded)
+            if not isinstance(summary, dict):
+                raise ValueError("invalid summary object")
+            for key in ("transactions_processed", "alerts_generated", "accounts_seen"):
+                if key in summary and (not isinstance(summary[key], int) or summary[key] < 0):
+                    raise ValueError("invalid summary metric")
+    except (UnicodeDecodeError, csv.Error, json.JSONDecodeError, TypeError, ValueError):
         raise HTTPException(
             status_code=503,
-            detail="Historical replay alerts are unavailable. Configure TRACEFORGE_DATA_DIR with the replay assets to enable alert, investigation, and money-trail routes.",
+            detail=f"Historical replay asset {filename} is unavailable or invalid. Verify the approved object in the private traceforge-replay bucket.",
+        ) from None
+
+
+def _ensure_replay_asset(filename: str, destination: Path) -> Path:
+    """Return a local replay file, fetching only the two approved objects if absent."""
+    if filename not in _REPLAY_ASSET_LIMITS:
+        raise HTTPException(status_code=503, detail="Requested replay asset is not available.")
+    if destination.is_file():
+        return destination
+
+    supabase_url = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+    secret_key = os.getenv("SUPABASE_SECRET_KEY", "").strip()
+    parsed_url = urlparse(supabase_url)
+    if (
+        not secret_key
+        or parsed_url.scheme != "https"
+        or not parsed_url.netloc
+        or parsed_url.username
+        or parsed_url.password
+        or parsed_url.query
+        or parsed_url.fragment
+        or parsed_url.path not in ("", "/")
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail=f"Historical replay asset {filename} is unavailable. Configure SUPABASE_URL and SUPABASE_SECRET_KEY for private replay storage.",
         )
+
+    request = Request(
+        f"{supabase_url}/storage/v1/object/traceforge-replay/{filename}",
+        headers={"apikey": secret_key, "Authorization": f"Bearer {secret_key}", "Accept": "application/octet-stream"},
+    )
+    temporary_path = None
     try:
-        with ALERTS_FILE.open("r", newline="", encoding="utf-8-sig") as file:
+        with urlopen(request, timeout=15) as response:
+            content = response.read(_REPLAY_ASSET_LIMITS[filename] + 1)
+        if len(content) > _REPLAY_ASSET_LIMITS[filename]:
+            raise ValueError("asset exceeds limit")
+        _validate_replay_asset(filename, content)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=destination.parent, prefix=f".{filename}.", delete=False) as temporary:
+            temporary.write(content)
+            temporary_path = Path(temporary.name)
+        os.replace(temporary_path, destination)
+        return destination
+    except HTTPException:
+        raise
+    except HTTPError as exc:
+        # Never log the request, response body, URL, or authorization headers.
+        logger.warning("Private replay asset download failed (HTTP %s).", exc.code)
+    except (URLError, TimeoutError, OSError, ValueError) as exc:
+        logger.warning("Private replay asset download failed (%s).", type(exc).__name__)
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+    raise HTTPException(
+        status_code=503,
+        detail=f"Historical replay asset {filename} is unavailable. Check private Storage configuration and approved object availability.",
+    ) from None
+
+
+def load_alerts():
+    alerts_file = _ensure_replay_asset("replay_alerts.csv", ALERTS_FILE)
+    try:
+        with alerts_file.open("r", newline="", encoding="utf-8-sig") as file:
             return list(csv.DictReader(file))
     except OSError:
         raise HTTPException(
@@ -913,10 +1007,9 @@ def get_alerts(limit: int = 100, offset: int = 0):
 
 @app.get("/api/replay-summary")
 def get_replay_summary():
-    if not SUMMARY_FILE.exists():
-        raise HTTPException(status_code=503, detail="Replay summary file is not available.")
+    summary_file = _ensure_replay_asset("replay_summary.json", SUMMARY_FILE)
     try:
-        with SUMMARY_FILE.open("r", encoding="utf-8") as file:
+        with summary_file.open("r", encoding="utf-8") as file:
             summary = json.load(file)
     except (json.JSONDecodeError, OSError):
         raise HTTPException(status_code=500, detail="Could not read replay summary.") from None

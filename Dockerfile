@@ -24,6 +24,8 @@ RUN useradd --uid 10001 --create-home traceforge \
     && chown -R traceforge:traceforge /srv/traceforge /var/lib/traceforge
 
 RUN chown -R traceforge:traceforge /var/lib/traceforge/data
+# Only generated synthetic fixtures are copied into the image. Historical
+# replay files are supplied separately through the private runtime mount.
 RUN mkdir -p /var/lib/traceforge/data/generated
 COPY --chown=10001:10001 data/generated/accounts.csv /var/lib/traceforge/data/generated/accounts.csv
 COPY --chown=10001:10001 data/generated/transactions.csv /var/lib/traceforge/data/generated/transactions.csv

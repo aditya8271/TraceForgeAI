@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
-const API = process.env.NEXT_PUBLIC_API_URL || (process.env.NODE_ENV === "development" ? "http://localhost:8000" : "");
+const API = (process.env.NEXT_PUBLIC_API_URL || (process.env.NODE_ENV === "development" ? "http://localhost:8000" : "")).replace(/\/$/, "");
 const navigation = [
   { name: "Overview", icon: "◫" },
   { name: "Investigations", icon: "⌕" },
@@ -243,7 +243,7 @@ function SyntheticTrailGraph({ trails }: { trails: any[] }) {
 }
 async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}) {
   if (!API) {
-    throw new Error("NEXT_PUBLIC_API_URL must be set to the deployed TraceForge API URL before building the production frontend.");
+    throw new Error("The production API URL is not configured. Set NEXT_PUBLIC_API_URL to the deployed TraceForge API origin and rebuild the frontend.");
   }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 45_000);
@@ -259,7 +259,7 @@ export default function Home() {
   const [query, setQuery] = useState("");
   const [alerts, setAlerts] = useState<AlertRecord[]>([]);
   const [summary, setSummary] = useState<ReplaySummary | null>(null);
-  const [totalAlerts, setTotalAlerts] = useState(0);
+  const [totalAlerts, setTotalAlerts] = useState<number | null>(null);
   const [selected, setSelected] = useState<AlertRecord | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -314,23 +314,21 @@ export default function Home() {
   async function loadData() {
     setLoading(true);
     setError("");
+    const [alertsResult, summaryResult] = await Promise.allSettled([
+      apiFetch(`${API}/api/alerts?limit=100&offset=0`, { cache: "no-store" }),
+      apiFetch(`${API}/api/replay-summary`, { cache: "no-store" }),
+    ]);
+    const errors: string[] = [];
     try {
-      const [alertsResponse, summaryResponse] = await Promise.all([
-        apiFetch(`${API}/api/alerts?limit=100&offset=0`, { cache: "no-store" }),
-        apiFetch(`${API}/api/replay-summary`, { cache: "no-store" }),
-      ]);
+      if (alertsResult.status === "rejected") throw alertsResult.reason;
+      const alertsResponse = alertsResult.value;
+      const alertsData = await alertsResponse.json().catch(() => ({}));
       if (!alertsResponse.ok) {
-        throw new Error(`Alerts API returned HTTP ${alertsResponse.status}`);
+        throw new Error(typeof alertsData.detail === "string" ? alertsData.detail : `Historical alerts API returned HTTP ${alertsResponse.status}.`);
       }
-      if (!summaryResponse.ok) {
-        throw new Error(`Summary API returned HTTP ${summaryResponse.status}`);
-      }
-      const alertsData = await alertsResponse.json();
-      const summaryData = await summaryResponse.json();
       const loadedAlerts: AlertRecord[] = alertsData.alerts || [];
       setAlerts(loadedAlerts);
       setTotalAlerts(Number(alertsData.total || 0));
-      setSummary(summaryData.summary || {});
       setSelected((previous) => {
         if (previous) {
           return (
@@ -344,21 +342,28 @@ export default function Home() {
         return loadedAlerts[0] || null;
       });
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? `${err.message}. Confirm the FastAPI server is running on port 8000.`
-          : "Could not load backend data."
-      );
-    } finally {
-      setLoading(false);
+      errors.push(err instanceof Error ? err.message : "Could not load historical alerts.");
     }
+    try {
+      if (summaryResult.status === "rejected") throw summaryResult.reason;
+      const summaryResponse = summaryResult.value;
+      const summaryData = await summaryResponse.json().catch(() => ({}));
+      if (!summaryResponse.ok) {
+        throw new Error(typeof summaryData.detail === "string" ? summaryData.detail : `Replay summary API returned HTTP ${summaryResponse.status}.`);
+      }
+      setSummary(summaryData.summary || {});
+    } catch (err) {
+      errors.push(err instanceof Error ? err.message : "Could not load the replay summary.");
+    }
+    setError(errors.join(" "));
+    setLoading(false);
   }
   async function loadCases() {
     setCaseLoading(true);
     setCaseError("");
     try {
       const response = await apiFetch(`${API}/api/cases?limit=500&offset=0`, { cache: "no-store" });
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : `Cases API returned HTTP ${response.status}`);
       const rows: SavedCase[] = data.cases || [];
       setSavedCases(rows);
@@ -374,7 +379,7 @@ export default function Home() {
     setCaseAuditError("");
     try {
       const response = await apiFetch(`${API}/api/case-audit/${encodeURIComponent(caseKey)}?limit=100`, { cache: "no-store" });
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : `Audit API returned HTTP ${response.status}`);
       setCaseAudit(data.events || []);
     } catch (err) {
@@ -395,7 +400,7 @@ export default function Home() {
         headers: { "Content-Type": "application/json", Accept: "application/json" },
         body: JSON.stringify(editingCase),
       });
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : `Save failed with HTTP ${response.status}`);
       setEditingCase(data.case as SavedCase);
       setCaseMessage("Case saved successfully.");
@@ -412,7 +417,7 @@ export default function Home() {
     setReviewError("");
     try {
       const response = await apiFetch(`${API}/api/case-reviews/${encodeURIComponent(caseKey)}`, { cache: "no-store" });
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : `Review history API returned HTTP ${response.status}`);
       setCaseReviews(data.reviews || data.case_reviews || []);
     } catch (err) {
@@ -447,7 +452,7 @@ export default function Home() {
           actor: "Local analyst session",
         }),
       });
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : `Review submission failed with HTTP ${response.status}`);
       setReviewMessage(`Decision recorded: ${data.decision || reviewDecision}. Review ID: ${data.review_id ?? "—"}.`);
       setReviewReason("");
@@ -466,7 +471,7 @@ export default function Home() {
       const response = await apiFetch(`${API}/api/money-trail?limit=12`, {
         cache: "no-store",
       });
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
       if (!response.ok) {
         throw new Error(
           typeof data.detail === "string"
@@ -494,7 +499,7 @@ export default function Home() {
     setFraudRingLoading(true); setFraudRingError("");
     try {
       const response = await apiFetch(`${API}/api/fraud-ring/evaluate?max_hops=4`, { cache: "no-store" });
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : `Benchmark API returned HTTP ${response.status}`);
       setFraudRingResult(data);
     } catch (err) { setFraudRingError(err instanceof Error ? err.message : "Could not load synthetic benchmark."); }
@@ -504,7 +509,7 @@ export default function Home() {
     setSyntheticTrailLoading(true); setSyntheticTrailError("");
     try {
       const response = await apiFetch(`${API}/api/synthetic/money-trails?source_account=V001&max_hops=4&min_amount=1000`, { cache: "no-store" });
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : `Synthetic trail API returned HTTP ${response.status}`);
       setSyntheticTrails(data);
     } catch (err) { setSyntheticTrailError(err instanceof Error ? err.message : "Could not load synthetic money trails."); }
@@ -514,7 +519,7 @@ export default function Home() {
     setPortfolioLoading(true); setPortfolioError("");
     try {
       const response = await apiFetch(`${API}/api/quality/portfolio`, { cache: "no-store" });
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : `Portfolio API returned HTTP ${response.status}`);
       setPortfolioQuality(data);
     } catch (err) { setPortfolioError(err instanceof Error ? err.message : "Could not load portfolio metrics."); }
@@ -531,7 +536,7 @@ export default function Home() {
         method: "POST",
         headers: { Accept: "application/json" },
       });
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : `Source refresh returned HTTP ${response.status}`);
       setPublicDataMessage(`Live fetch succeeded: ${data.row_count} NPCI rows (${data.period_start} to ${data.period_end}).`);
       await loadPublicData(true);
@@ -548,7 +553,7 @@ export default function Home() {
     setPublicDataError("");
     try {
       const response = await apiFetch(`${API}/api/intelligence/public-data`, { cache: "no-store" });
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : `Public data API returned HTTP ${response.status}`);
       setPublicData({ ...data, data_status: liveFetch ? "LIVE" : data.data_status });
     } catch (err) {
@@ -574,7 +579,7 @@ export default function Home() {
           value_unit: publicValueUnit,
         }),
       });
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : `Import failed with HTTP ${response.status}`);
       setPublicDataMessage(`Imported ${data.row_count} monthly rows (${data.period_start} to ${data.period_end}).`);
       await loadPublicData();
@@ -593,6 +598,8 @@ export default function Home() {
   useEffect(() => {
     if (active === "Real-World Intelligence Lab") void loadPublicData();
   }, [active]);
+  const totalAlertsLabel = totalAlerts === null ? "—" : formatNumber(totalAlerts);
+  const loadedAlertsLabel = totalAlerts === null ? "Unavailable" : `${alerts.length} / ${totalAlertsLabel}`;
   const filteredAlerts = useMemo(() => {
     const term = query.trim().toLowerCase();
     if (!term) return alerts;
@@ -633,7 +640,7 @@ export default function Home() {
           transaction_id: selected.transaction_id,
         }),
       });
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
       if (!response.ok) {
         throw new Error(
           typeof data.detail === "string"
@@ -706,7 +713,7 @@ export default function Home() {
               <span className="nav-icon">{item.icon}</span>
               <span>{item.name}</span>
               {item.name === "Investigations" && (
-                <span className="nav-count">{formatNumber(totalAlerts)}</span>
+                <span className="nav-count">{totalAlertsLabel}</span>
               )}
             </button>
           ))}
@@ -714,7 +721,7 @@ export default function Home() {
         <div className="sidebar-bottom">
           <div className="system-status">
             <span className="status-dot" />
-            {error ? "API connection issue" : loading ? "Loading data" : "API connected"}
+            {error ? "Historical replay unavailable" : loading ? "Loading replay data" : "API responding"}
           </div>
           <div className="profile">
             <div className="avatar">TF</div>
@@ -753,15 +760,15 @@ export default function Home() {
             <span className="notice-icon">i</span>
             <span>
               <strong>Historical replay mode</strong> — alerts are loaded from
-              your local dataset replay. This is not a live bank feed, and an
+              the configured replay dataset when available. This is not a live bank feed, and an
               alert is not proof of fraud.
             </span>
           </div>
-          {error && (
+          {error && ["Overview", "Investigations", "Portfolio Analytics", "Transaction Replay", "Money Trail", "AI Investigator"].includes(active) && (
             <div className="prototype-notice">
               <span className="notice-icon">!</span>
               <span>
-                <strong>Could not load data:</strong> {error}
+                <strong>Historical replay data unavailable:</strong> {error}
               </span>
             </div>
           )}
@@ -906,7 +913,7 @@ export default function Home() {
                 <Metric label="Transactions processed" value={formatNumber(summary?.transactions_processed)} detail="Replay summary aggregate" icon="▤" />
                 <Metric label="Accounts seen" value={formatNumber(summary?.accounts_seen)} detail="Replay summary aggregate" icon="◎" />
                 <Metric label="Alerts generated" value={formatNumber(summary?.alerts_generated)} detail="Rule-based review signals" icon="⌁" />
-                <Metric label="Alerts loaded" value={`${alerts.length} / ${formatNumber(totalAlerts)}`} detail="Current alert API page" icon="✳" />
+                <Metric label="Alerts loaded" value={loadedAlertsLabel} detail="Current alert API page" icon="✳" />
               </div>
               <AlertVisualAnalytics alerts={alerts} title="Portfolio historical replay alert analytics" loading={loading} />
               <div className="section-heading"><div><h2>Saved case-review portfolio</h2><p>Backend portfolio endpoint · saved case statuses, decisions and review snapshots only.</p></div><span className="tag tag-amber">REVIEW RECORDS</span></div>
@@ -940,6 +947,23 @@ export default function Home() {
 
           {active === "Overview" && (
             <>
+              <div className="section-heading">
+                <div><h2>Controlled synthetic demonstration</h2><p>Generated fixture data for this demonstration only. These results are separate from historical replay alerts.</p></div><span className="tag tag-amber">SYNTHETIC</span>
+              </div>
+              {(fraudRingError || syntheticTrailError) && <div className="prototype-notice" role="status"><span className="notice-icon">!</span><span>{[fraudRingError, syntheticTrailError].filter(Boolean).join(" ")}</span></div>}
+              {(fraudRingLoading || syntheticTrailLoading) && <div className="panel-card" role="status">Loading synthetic demonstration data…</div>}
+              {(fraudRingResult || syntheticTrails) && <div className="metric-grid">
+                {fraudRingResult && <>
+                  <div className="metric-card"><span>Synthetic accounts evaluated</span><strong>{formatNumber(fraudRingResult.accounts_evaluated)}</strong><small>Generated labels only</small></div>
+                  <div className="metric-card"><span>Rule-based candidate paths</span><strong>{formatNumber(fraudRingResult.detected_path_count)}</strong><small>Heuristic output, not a fraud verdict</small></div>
+                </>}
+                {syntheticTrails && <>
+                  <div className="metric-card"><span>Synthetic transactions</span><strong>{formatNumber(syntheticTrails.graph_summary?.transactions)}</strong><small>Generated fixture records</small></div>
+                  <div className="metric-card"><span>Synthetic paths from V001</span><strong>{formatNumber(syntheticTrails.trail_count)}</strong><small>Returned candidate paths</small></div>
+                </>}
+              </div>}
+              {syntheticTrails && <SyntheticTrailGraph trails={syntheticTrails.trails || []} />}
+              {(fraudRingResult || syntheticTrails) && <div className="section-heading"><span className="muted-copy">Synthetic graph and benchmark results use generated data and are not historical alerts or real-world findings.</span><button className="text-button" onClick={() => setActive("Fraud Ring Lab")}>Open Fraud Ring Lab →</button></div>}
               <div className="metrics-grid">
                   <Metric
                   label="Transactions replayed"
@@ -967,8 +991,8 @@ export default function Home() {
                 />
                 <Metric
                   label="Alert records loaded"
-                  value={formatNumber(totalAlerts)}
-                  detail={`Showing ${alerts.length} records from the API`}
+                  value={totalAlertsLabel}
+                  detail={totalAlerts === null ? "Historical replay unavailable" : `Showing ${alerts.length} records from the API`}
                   icon="✳"
                 />
               </div>
@@ -1075,8 +1099,7 @@ export default function Home() {
                 <div>
                   <h2>Case queue</h2>
                   <p>
-                    {formatNumber(totalAlerts)} alerts in replay output ·{" "}
-                    {alerts.length} loaded on this page
+                    {totalAlerts === null ? "Historical replay alert count unavailable" : `${totalAlertsLabel} alerts in replay output · ${alerts.length} loaded on this page`}
                   </p>
                 </div>
                 <button
@@ -1096,8 +1119,9 @@ export default function Home() {
               </div>
               <CaseTable cases={filteredAlerts} onSelect={openAlert} />
               <p className="metric-detail" style={{ marginTop: 12 }}>
-                The API currently loads the first 100 alerts. Search covers
-                those loaded records, not all {formatNumber(totalAlerts)} alerts.
+                {totalAlerts === null
+                  ? "Alert search is unavailable until historical replay records can be loaded."
+                  : `The API currently loads the first 100 alerts. Search covers those loaded records, not all ${totalAlertsLabel} alerts.`}
               </p>
             </>
           )}
@@ -1215,7 +1239,7 @@ export default function Home() {
               <div className="metrics-grid">
                 <Metric label="Transactions processed" value={formatNumber(summary?.transactions_processed)} detail="Backend replay summary" icon="▤" />
                 <Metric label="Alerts generated" value={formatNumber(summary?.alerts_generated)} detail="Rule-based review signals" icon="⌁" />
-                <Metric label="Alert rows loaded" value={`${alerts.length} / ${formatNumber(totalAlerts)}`} detail="Current paginated alert sample" icon="✳" />
+                <Metric label="Alert rows loaded" value={loadedAlertsLabel} detail="Current paginated alert sample" icon="✳" />
                 <Metric label="Replay progress" value="No progress data" detail="No incremental progress endpoint is available" icon="↻" />
               </div>
               <AlertVisualAnalytics alerts={alerts} title="Historical replay alert chronology" loading={loading} />
@@ -1950,7 +1974,7 @@ function CaseTable({
           {cases.length === 0 && (
             <tr>
               <td colSpan={7} className="no-results">
-                No matching records. Check the search or API connection.
+                No historical alert records are currently available.
               </td>
             </tr>
           )}

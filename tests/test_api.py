@@ -2,6 +2,10 @@ import asyncio
 import csv
 import io
 import json
+import os
+from pathlib import Path
+import subprocess
+import sys
 from urllib.error import HTTPError
 
 import pytest
@@ -70,6 +74,32 @@ def test_health_returns_ok(client):
     assert response.json()["status"] == "ok"
 
 
+def test_configured_data_root_resolves_replay_assets_to_expected_paths(tmp_path):
+    data_root = tmp_path / "private-runtime-data"
+    environment = os.environ.copy()
+    environment["TRACEFORGE_DATA_DIR"] = str(data_root)
+    probe = (
+        "import json; from app import api; "
+        "print(json.dumps({'alerts': str(api.ALERTS_FILE), "
+        "'summary': str(api.SUMMARY_FILE), 'database': str(api.DB_FILE)}))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=Path(__file__).resolve().parents[1],
+        env=environment,
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+    paths = json.loads(result.stdout.splitlines()[-1])
+    replay_dir = data_root / "replay"
+    assert paths == {
+        "alerts": str(replay_dir / "replay_alerts.csv"),
+        "summary": str(replay_dir / "replay_summary.json"),
+        "database": str(replay_dir / "investigations.db"),
+    }
+
+
 def test_health_does_not_require_database(client, monkeypatch):
     monkeypatch.setattr(api, "db_connection", lambda: (_ for _ in ()).throw(AssertionError("health must not connect to storage")))
     assert client.get("/api/health").status_code == 200
@@ -121,12 +151,23 @@ def test_cloud_runtime_can_start_without_optional_gemini_or_database(monkeypatch
 
 def test_missing_optional_replay_and_synthetic_assets_return_clear_503(client, monkeypatch, tmp_path):
     monkeypatch.setattr(api, "ALERTS_FILE", tmp_path / "missing-alerts.csv")
+    monkeypatch.setattr(api, "SUMMARY_FILE", tmp_path / "missing-summary.json")
+    monkeypatch.setattr(api, "GENERATED_DIR", Path(__file__).resolve().parents[1] / "data" / "generated")
     missing_alerts = client.get("/api/alerts")
     assert missing_alerts.status_code == 503
-    assert "TRACEFORGE_DATA_DIR" in missing_alerts.json()["detail"]
+    assert "SUPABASE_URL" in missing_alerts.json()["detail"]
+    missing_summary = client.get("/api/replay-summary")
+    assert missing_summary.status_code == 503
+    assert "SUPABASE_URL" in missing_summary.json()["detail"]
+    # Missing historical replay files do not take down the independent fixtures.
+    trails = client.get("/api/synthetic/money-trails")
+    assert trails.status_code == 200
+    assert trails.json()["mode"] == "controlled_synthetic_dataset"
+    assert trails.json()["trail_count"] > 0
+    assert client.get("/api/fraud-ring/evaluate").status_code == 200
+    assert client.get("/api/quality/portfolio").status_code == 200
     synthetic = client.get("/api/fraud-ring/evaluate")
-    assert synthetic.status_code == 503
-    assert "Optional synthetic transaction assets" in synthetic.json()["detail"]
+    assert synthetic.json()["mode"] == "controlled_synthetic_benchmark"
 
 
 def test_oversized_request_is_rejected_with_cors(client):
@@ -137,6 +178,18 @@ def test_oversized_request_is_rejected_with_cors(client):
     )
     assert response.status_code == 413
     assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+
+
+def test_production_frontend_origin_preflight(client):
+    response = client.options(
+        "/api/health",
+        headers={
+            "Origin": "https://tracforge-ai.web.app",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "https://tracforge-ai.web.app"
 
 
 def test_alerts_returns_historical_rows(client):
@@ -157,6 +210,107 @@ def test_replay_summary_returns_json(client):
     response = client.get("/api/replay-summary")
     assert response.status_code == 200
     assert response.json()["summary"]["transactions_processed"] == 1
+
+
+def test_private_storage_downloads_only_approved_replay_assets(client, monkeypatch, tmp_path):
+    secret = "test-supabase-secret-never-log"
+    monkeypatch.setenv("SUPABASE_URL", "https://project-ref.supabase.co")
+    monkeypatch.setenv("SUPABASE_SECRET_KEY", secret)
+    alerts_file = tmp_path / "replay" / "replay_alerts.csv"
+    summary_file = tmp_path / "replay" / "replay_summary.json"
+    alerts_file.unlink(missing_ok=True)
+    summary_file.unlink(missing_ok=True)
+    monkeypatch.setattr(api, "ALERTS_FILE", alerts_file)
+    monkeypatch.setattr(api, "SUMMARY_FILE", summary_file)
+    payloads = {
+        "replay_alerts.csv": (
+            b"transaction_id,account_id,amount,txn_type,transaction_timestamp\n"
+            b"TXN_PRIVATE_TEST,ACCT_PRIVATE_TEST,42.5,D,2026-01-01T00:00:00Z\n"
+        ),
+        "replay_summary.json": b'{"transactions_processed":1,"alerts_generated":1,"accounts_seen":1}',
+    }
+    requests = []
+
+    class FakeResponse(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.close()
+
+    def fake_urlopen(request, timeout):
+        requests.append(request)
+        filename = request.full_url.rsplit("/", 1)[-1]
+        return FakeResponse(payloads[filename])
+
+    monkeypatch.setattr(api, "urlopen", fake_urlopen)
+    alerts = client.get("/api/alerts")
+    summary = client.get("/api/replay-summary")
+
+    assert alerts.status_code == 200
+    assert alerts.json()["alerts"][0]["transaction_id"] == "TXN_PRIVATE_TEST"
+    assert summary.status_code == 200
+    assert summary.json()["summary"]["transactions_processed"] == 1
+    assert [request.full_url for request in requests] == [
+        "https://project-ref.supabase.co/storage/v1/object/traceforge-replay/replay_alerts.csv",
+        "https://project-ref.supabase.co/storage/v1/object/traceforge-replay/replay_summary.json",
+    ]
+    for request in requests:
+        assert request.get_header("Apikey") == secret
+        assert request.get_header("Authorization") == f"Bearer {secret}"
+        assert "investigations.db" not in request.full_url
+        assert "investigations.backup.db" not in request.full_url
+    assert alerts_file.is_file() and summary_file.is_file()
+
+
+@pytest.mark.parametrize(
+    ("filename", "payload"),
+    [
+        ("replay_alerts.csv", b"transaction_id,amount\nTXN,12\n"),
+        ("replay_summary.json", b"[]"),
+    ],
+)
+def test_invalid_private_replay_asset_is_not_cached(client, monkeypatch, tmp_path, filename, payload):
+    monkeypatch.setenv("SUPABASE_URL", "https://project-ref.supabase.co")
+    monkeypatch.setenv("SUPABASE_SECRET_KEY", "test-secret")
+    alerts_file = tmp_path / "replay" / "replay_alerts.csv"
+    summary_file = tmp_path / "replay" / "replay_summary.json"
+    alerts_file.unlink(missing_ok=True)
+    summary_file.unlink(missing_ok=True)
+    monkeypatch.setattr(api, "ALERTS_FILE", alerts_file)
+    monkeypatch.setattr(api, "SUMMARY_FILE", summary_file)
+    monkeypatch.setattr(api, "urlopen", lambda *args, **kwargs: io.BytesIO(payload))
+
+    response = client.get("/api/alerts" if filename.endswith(".csv") else "/api/replay-summary")
+
+    assert response.status_code == 503
+    assert "test-secret" not in response.text
+    assert not (alerts_file if filename.endswith(".csv") else summary_file).exists()
+
+
+def test_private_storage_missing_credentials_and_missing_object_are_safe(client, monkeypatch, tmp_path, caplog):
+    alerts_file = tmp_path / "missing" / "replay_alerts.csv"
+    monkeypatch.setattr(api, "ALERTS_FILE", alerts_file)
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_SECRET_KEY", raising=False)
+    monkeypatch.setattr(api, "urlopen", lambda *args, **kwargs: pytest.fail("must not request without credentials"))
+    missing_credentials = client.get("/api/alerts")
+    assert missing_credentials.status_code == 503
+    assert "SUPABASE_URL" in missing_credentials.json()["detail"]
+
+    secret = "secret-value-for-test"
+    monkeypatch.setenv("SUPABASE_URL", "https://project-ref.supabase.co")
+    monkeypatch.setenv("SUPABASE_SECRET_KEY", secret)
+
+    def missing_object(request, timeout):
+        raise HTTPError(request.full_url, 404, "missing", {}, None)
+
+    monkeypatch.setattr(api, "urlopen", missing_object)
+    missing_file = client.get("/api/alerts")
+    assert missing_file.status_code == 503
+    assert secret not in missing_file.text
+    assert secret not in caplog.text
+    assert not alerts_file.exists()
 
 
 def test_money_trail_builds_nodes_and_edges(client):

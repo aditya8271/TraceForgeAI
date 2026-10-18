@@ -1,4 +1,6 @@
 # Deny the entire context by default; explicitly allow only API runtime code.
+# Historical replay data is supplied through private runtime storage and is
+# never included in the Docker build context or image.
 **
 !Dockerfile
 !requirements-api.lock

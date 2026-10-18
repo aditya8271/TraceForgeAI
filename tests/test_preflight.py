@@ -30,9 +30,12 @@ def test_api_image_excludes_ignored_datasets_models_and_local_databases():
     assert "COPY data/replay/" not in dockerfile
     assert "replay_alerts.csv" not in dockerfile
     assert "replay_summary.json" not in dockerfile
+    assert "investigations.db" not in dockerfile
+    assert "investigations.backup.db" not in dockerfile
     assert "COPY models/" not in dockerfile
     assert "--host 0.0.0.0 --port ${PORT:-8080}" in dockerfile
     assert "migrations/ ./migrations/" in dockerfile
     assert "requirements-api.lock" in dockerfile
     assert "**" in dockerignore.splitlines()
     assert "!models/" not in dockerignore
+    assert "!data/replay/" not in dockerignore
