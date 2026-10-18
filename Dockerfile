@@ -24,6 +24,11 @@ RUN useradd --uid 10001 --create-home traceforge \
     && chown -R traceforge:traceforge /srv/traceforge /var/lib/traceforge
 
 RUN chown -R traceforge:traceforge /var/lib/traceforge/data
+RUN mkdir -p /var/lib/traceforge/data/generated
+COPY --chown=10001:10001 data/generated/accounts.csv /var/lib/traceforge/data/generated/accounts.csv
+COPY --chown=10001:10001 data/generated/transactions.csv /var/lib/traceforge/data/generated/transactions.csv
+COPY --chown=10001:10001 data/generated/entity_observations.csv /var/lib/traceforge/data/generated/entity_observations.csv
+COPY --chown=10001:10001 data/generated/ground_truth.csv /var/lib/traceforge/data/generated/ground_truth.csv
 USER 10001:10001
 
 EXPOSE 8080

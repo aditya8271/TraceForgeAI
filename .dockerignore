@@ -20,5 +20,10 @@
 !scripts/
 !scripts/__init__.py
 !scripts/migrate_sqlite_to_postgres.py
-
-
+# Approved synthetic demo fixtures only
+!data/
+!data/generated/
+!data/generated/accounts.csv
+!data/generated/transactions.csv
+!data/generated/entity_observations.csv
+!data/generated/ground_truth.csv

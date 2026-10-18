@@ -1,4 +1,4 @@
-﻿# Environment secrets
+# Environment secrets
 .env
 .env.*
 !.env.example
@@ -71,3 +71,10 @@ frontend/package-lock.before-audit.json
 
 # Local replay data and investigation database
 /data/replay/
+# Approved synthetic demo fixtures only
+!data/
+!data/generated/
+!data/generated/accounts.csv
+!data/generated/transactions.csv
+!data/generated/entity_observations.csv
+!data/generated/ground_truth.csv
