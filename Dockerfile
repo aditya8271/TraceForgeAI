@@ -24,11 +24,6 @@ RUN useradd --uid 10001 --create-home traceforge \
     && chown -R traceforge:traceforge /srv/traceforge /var/lib/traceforge
 
 RUN chown -R traceforge:traceforge /var/lib/traceforge/data
-RUN mkdir -p /var/lib/traceforge/data/replay
-
-COPY --chown=10001:10001 data/replay/replay_alerts.csv /var/lib/traceforge/data/replay/replay_alerts.csv
-COPY --chown=10001:10001 data/replay/replay_summary.json /var/lib/traceforge/data/replay/replay_summary.json
-
 USER 10001:10001
 
 EXPOSE 8080

@@ -21,8 +21,4 @@
 !scripts/__init__.py
 !scripts/migrate_sqlite_to_postgres.py
 
-# Include approved replay demo assets
-!data/
-!data/replay/
-!data/replay/replay_alerts.csv
-!data/replay/replay_summary.json
+
